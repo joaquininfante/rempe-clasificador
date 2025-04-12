@@ -1726,7 +1726,7 @@ clasifica = function(prescription) {
   prescription_completo = prescription_completo %>% 
     arrange(desc(created_date))
     
-  write.csv(prescription_completo, paste0("resultado_clasificacion_",fecha_hora,".csv"), row.names = FALSE)
+  write.csv(prescription_completo, "resultado_clasificacion.csv", row.names = FALSE)
   
   # nom = paste0("CLASIFICACION_",salida,".xlsx")
   # write_xlsx(prescription_completo, paste0(salida,"/",nom))
@@ -1827,11 +1827,11 @@ clasifica = function(prescription) {
   
   return(prescription_completo)
   }
-  write.csv("Ninguna prescripcion realizada por texto libre",paste0("resultado_clasificacion_",fecha_hora,".csv"))
+  write.csv("Ninguna prescripcion realizada por texto libre","resultado_clasificacion.csv")
   
   }
   else {
-    write.csv("Ninguna prescripcion realizada de OTROS PRODUCTOS",paste0("resultado_clasificacion_",fecha_hora,".csv"))
+    write.csv("Ninguna prescripcion realizada de OTROS PRODUCTOS","resultado_clasificacion.csv")
   }
 }
 
