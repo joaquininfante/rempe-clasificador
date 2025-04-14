@@ -666,7 +666,7 @@ for (i in 1:nrow(productos)) {
   if(grepl(patron, productos$presentation3[i])) {
     productos$presentation3[i] = str_remove_all(productos$presentation3[i], patron)
   }
-  cat("Producto ",i, " de ", nrow(productos), " analizado\n")
+  # cat("Producto ",i, " de ", nrow(productos), " analizado\n")
 }
 
 productos$presentation3 = quitar_espacios_extra(productos$presentation3)
