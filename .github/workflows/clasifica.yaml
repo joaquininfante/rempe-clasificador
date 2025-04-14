@@ -22,7 +22,11 @@ jobs:
 
       - name: Crear archivo .Renviron
         run: |
-          echo "PGPASSWORD=${{ secrets.PGPASSWORD }}" >> ~/.Renviron
+           echo "PGPASSWORD=${{ secrets.PGPASSWORD }}" >> .Renviron
+           echo "PGUSER=${{ secrets.PGUSER }}" >> .Renviron
+           echo "PGHOST=${{ secrets.PGHOST }}" >> .Renviron
+           echo "PGDBNAME=${{ secrets.PGDBNAME }}" >> .Renviron
+           echo "PGPORT=5432" >> .Renviron
 
       - name: Ejecutar script de clasificación
         run: |
