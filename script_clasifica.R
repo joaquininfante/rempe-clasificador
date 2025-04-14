@@ -6,13 +6,12 @@ library(RPostgres)
 
 con <- dbConnect(
   Postgres(),
-  dbname   = "rempe-app",
-  host     = "bd-cpmp-test.postgres.database.azure.com",
-  port     = 5432,
-  user     = "lectura",
-  password = Sys.getenv("PGPASSWORD")  # Aquí usamos el secreto
+  dbname   = Sys.getenv("PGDBNAME"),
+  host     = Sys.getenv("PGHOST"),
+  port     = Sys.getenv("PGPORT"),
+  user     = Sys.getenv("PGUSER"),
+  password = Sys.getenv("PGPASSWORD")
 )
-
 ################################################################################
 # FUNCIÓN CLASIFICA
 
