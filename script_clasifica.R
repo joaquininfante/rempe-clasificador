@@ -15,7 +15,7 @@ library(RPostgres)
 
 con_rempe <- dbConnect(
   Postgres(),
-  dbname   = Sys.getenv("PGDBNAME"),
+  dbname   = Sys.getenv("PGDBNAME1"),
   host     = Sys.getenv("PGHOST"),
   port     = Sys.getenv("PGPORT"),
   user     = Sys.getenv("PGUSER"),
@@ -24,7 +24,7 @@ con_rempe <- dbConnect(
 
 con_nomenclator <- dbConnect(
   Postgres(),
-  dbname   = Sys.getenv("PGDBNAME"),
+  dbname   = Sys.getenv("PGDBNAME2"),
   host     = Sys.getenv("PGHOST"),
   port     = Sys.getenv("PGPORT"),
   user     = Sys.getenv("PGUSER"),
