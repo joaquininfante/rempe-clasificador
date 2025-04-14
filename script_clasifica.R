@@ -1,10 +1,19 @@
 ## AUTOMATIZACIÓN DE LA FUNCIÓN DE CLASIFICACIÓN
 
+library(tidyr)
+library(dplyr)
+library(bit64)
+library(stringr)
+library(writexl)
+library(tm)
+library(stringdist)
+
+################################################################################
 # CONEXIÓN A LA BASE DE DATOS
 library(DBI)
 library(RPostgres)
 
-con <- dbConnect(
+con_rempe <- dbConnect(
   Postgres(),
   dbname   = Sys.getenv("PGDBNAME"),
   host     = Sys.getenv("PGHOST"),
@@ -12,9 +21,658 @@ con <- dbConnect(
   user     = Sys.getenv("PGUSER"),
   password = Sys.getenv("PGPASSWORD")
 )
+
+con_nomenclator <- dbConnect(
+  Postgres(),
+  dbname   = Sys.getenv("PGDBNAME"),
+  host     = Sys.getenv("PGHOST"),
+  port     = Sys.getenv("PGPORT"),
+  user     = Sys.getenv("PGUSER"),
+  password = Sys.getenv("PGPASSWORD")
+)
+
+
+################################################################################
+# DICCIONARIO DE MEDICAMENTOS
+prescripcion <- dbGetQuery(con_rempe, "
+  select  p.id , p.contenido , p.des_dosific , p.des_nomco , p.des_prese , p.lista_estupefaciente , 
+  p.lista_psicotropo , p.nro_conte , p.laboratorio_comercializador_id
+  from rempe.prescripcion p 
+  where p.sw_comercializado = '1' 
+  	and p.sw_envase_clinico = '0'
+  	and p.cod_sitreg_id = '1' 
+  	and p.cod_sitreg_presen_id = '1' 
+  	and p.sw_uso_hospitalario = '0' 
+  	and p.des_dosific <> 'NOMENCLATOR_EN_REVISION'
+")
+prescripcion$id = as.numeric(prescripcion$id)
+prescripcion$laboratorio_comercializador_id = as.numeric(prescripcion$laboratorio_comercializador_id)
+
+
+pres_laboratorios <- dbGetQuery(con_rempe, "
+  select  id,laboratorio
+  from rempe.pres_laboratorios
+")
+pres_laboratorios$id = as.numeric(pres_laboratorios$id)
+
+
+# PASO 2: Unimos a la información de las descripciones de medicamentos, el 
+# laboratorio al que pertenece
+prescripcion = prescripcion %>% 
+  left_join(pres_laboratorios, by = c("laboratorio_comercializador_id" = "id" ))
+
+# PASO 3: Quitamos todo a la derecha del primer dígito
+for (i in 1:nrow(prescripcion)) {
+  if(grepl("\\d",prescripcion$des_nomco[i])){
+    prescripcion$des_nomco[i] = sub("\\d.*","",prescripcion$des_nomco[i])
+  }
+  # cat("Medicamento ",i, " de ", nrow(prescripcion), " analizado\n")
+}
+
+# PASO 4: Convertimos a mayúsculas y quitamos tildes
+prescripcion$des_nomco = toupper(prescripcion$des_nomco)
+prescripcion$laboratorio = toupper(prescripcion$laboratorio)
+
+quitar_tildes <- function(texto) {
+  texto_sin_tildes <- chartr("ÁÉÍÓÚÀÈÌÒÙÜ", "AEIOUAEIOUU", texto)
+  return(texto_sin_tildes)
+}
+prescripcion$des_nomco = quitar_tildes(prescripcion$des_nomco)
+prescripcion$laboratorio = quitar_tildes(prescripcion$laboratorio)
+
+# PASO 5: Quitamos algunos símbolos, como /, paréntesis, puntos, comas, etc.
+quitar_simbolos2 = function(texto) {
+  texto_limpio = gsub("/", " ", texto)
+  texto_limpio = gsub("[(]", "", texto_limpio)
+  texto_limpio = gsub("[)]", "", texto_limpio)
+  texto_limpio = gsub("[.]", "", texto_limpio)
+  texto_limpio = gsub(",", "", texto_limpio)
+}
+prescripcion$des_nomco = quitar_simbolos2(prescripcion$des_nomco)
+prescripcion$laboratorio = quitar_simbolos2(prescripcion$laboratorio)
+
+# PASO 6: Vamos a borrar las siguientes palabras
+palabras = c("INFANTIL",
+             "SEMANAL",
+             "COMPRIMIDOS",
+             "CREMA",
+             "DE",
+             "POLVO",
+             "SABOR",
+             "JERINGA",
+             "SABOR",
+             "ACIDO",
+             "CAPSULAS",
+             "CON",
+             "COMPRIMIDOS",
+             "PARA",
+             "D",
+             "SUSPENSION",
+             "PLUS",
+             "Y",
+             "ACEITE",
+             "ACETATO",
+             "EN",
+             "SPAIN",
+             "DIARIO",
+             "SABOR",
+             "INYECTABLE",
+             "RECUBIERTOS",
+             "DURAS",
+             "B",
+             "PEDIATRICO",
+             "CHUPAR",
+             "RECTAL",
+             "ADULTOS",
+             "INFANTIL",
+             "COR",
+             "PELICULA",
+             "PASTILLAS",
+             "NIÑOS",
+             "GOTAS",
+             "KIT",
+             "PERFUSION",
+             "SIMPLE",
+             "SOBRES",
+             "C",
+             "FUERTE",
+             "MASTICABLES",
+             "GEL",
+             "ORALES",
+             "PULVERIZACION",
+             "SIMPLEX",
+             "SOBRE",
+             "CAFEINA",
+             "APOSITO",
+             "INYECTABLES",
+             "JUNIOR",
+             "USO",
+             "E",
+             "MIEL",
+             "TUBO",
+             "VERDE",
+             "A",
+             "EFG",
+             "F",
+             "NARANJA",
+             "REFORZADO",
+             "BLANDAS",
+             "DEL",
+             "CONCENTRADO",
+             "LAB",
+             "SEMESTRAL",
+             "SULFATO",
+             "ANARANJADO",
+             "COLIRIO",
+             "DOS",
+             "DUO",
+             "GRIPE",
+             "K",
+             "NOCHE",
+             "POR",
+             "TOS",
+             "ADHESIVO",
+             "ANTI",
+             "FILM",
+             "MIX",
+             "O",
+             "PRO",
+             "RECTO",
+             "SIN",
+             "SOR",
+             "TEST",
+             "UÑAS",
+             "VIAL",
+             "ANTITUSIVO",
+             "Y",
+             "CUTANEA",
+             "LIMON",
+             "MENTA",
+             "EN",
+             "SOBRES",
+             "SUSPENSION",
+             "UNISOSIS",
+             "VAGINAL",
+             "VAGINALES",
+             "VENTOLADO",
+             "VI",
+             "YODO",
+             "RESFRIADO",
+             "SILICONA",
+             "SUPRA",
+             "PROLONGADA",
+             "GOMA",
+             "H",
+             "HOT",
+             "KIDS",
+             "ON",
+             "ONE",
+             "P",
+             "FARMACEUTICA",
+             "FUCA",
+             "DISPERSION",
+             "DRINK",
+             "ESPUMA",
+             "EXTRA",
+             "BUCODISPERSABLES",
+             "CLORHEXIDINA",
+             "CHOCOLATE",
+             "CR",
+             "DERMO",
+             "FARMA",
+             "DR",
+             "SPRAY",
+             "TETRA",
+             "CARE",
+             "PURA",
+             "VACUNA",
+             "COMPUESTO",
+             "DESCONGESTIVO",
+             "HIPERTONICO",
+             "IMPREGNADO",
+             "LACTANTES",
+             "MEDICA",
+             "MUCOLITICO",
+             "VIÑAS",
+             "BUCAL",
+             "EMULSION",
+             "INCOLORO",
+             "COOL",
+             "ESTERIL",
+             "FRESA",
+             "JABONOSO",
+             "LAXANTE",
+             "COVID",
+             "SOLUCION",
+             "BISACOLIDO",
+             "BISACODILO",
+             "OROS",
+             "ORAL",
+             "LIQUIDO"
+)
+
+# Creamos el patrón con esta función a partir de las palabras
+patron <- paste0("\\b(", paste(palabras, collapse = "|"), ")\\b")
+
+for (i in 1:nrow(prescripcion)) {
+  if (grepl(patron,prescripcion$des_nomco[i])) {
+    prescripcion$des_nomco[i] = str_remove_all(prescripcion$des_nomco[i],patron)
+  }
+  # cat("Medicamento ",i, " de ", nrow(prescripcion), " analizado\n")
+}
+
+
+# PASO 7: Vamos a quitar las palabras del laboratorio
+guardar_palabras <- function(frase) {
+  palabras <- unlist(strsplit(frase, "\\s+"))  
+  return(palabras)
+}
+
+for (i in 1:nrow(prescripcion)) {
+  v = guardar_palabras(prescripcion$laboratorio[i])
+  patron <- paste0("\\b(", paste(v, collapse = "|"), ")\\b")
+  
+  if (grepl(patron,prescripcion$des_nomco[i])) {
+    prescripcion$des_nomco[i] = str_remove_all(prescripcion$des_nomco[i],patron)
+  }
+  # cat("Medicamento ",i, " de ", nrow(prescripcion), " analizado\n")
+}
+
+# PASO 8: Vamos a quitar espacios
+quitar_espacios_extra <- function(texto) {
+  texto_limpio <- gsub("\\s+", " ", texto)  # Reemplaza múltiples espacios con uno solo
+  return(trimws(texto_limpio))  # Elimina espacios al inicio y final
+}
+prescripcion$des_nomco = quitar_espacios_extra(prescripcion$des_nomco)
+
+# PASO 9: Vamos a borrar las siguientes palabras, relevantes a farmacéuticas, para mejorar la clasificación 
+for (i in 1:nrow(prescripcion)) {
+  patron = "STADAPHARM|FARMAMABO|RATIOMED|\\+|STADAFARMA|RATIOPHARM|CINFAMED|-RATIOPHARMA|-RATIO|- RATIO|PHARMACEUTICALS|PHARMAGENUS|PHARMAKERN|PHARMATRES"
+  if(grepl(patron,prescripcion$des_nomco[i])) {
+    prescripcion$des_nomco[i] = gsub(patron,"",prescripcion$des_nomco[i])
+  }
+  # cat("Medicamento ",i, " de ", nrow(prescripcion), " analizado\n")
+}
+
+# PASO 10: Tokenizamos la descripción de los medicamentos para ver cuales son las 
+# palabras más repetidas y eliminar aquellos que puedan interferir en la clasificación
+# de las prescripciones de OTROS_PRODUCTOS
+repetidas = as.data.frame(unlist(strsplit(prescripcion$des_nomco, " ")))
+names(repetidas) = "palabras"
+
+df = repetidas %>% 
+  select(palabras) %>% 
+  count(palabras, sort = T)
+
+for (i in 1:nrow(prescripcion)) {
+  patron = "\\b(DOSIS|UNIDOSIS|EFERVESCENTES|AMPOLLA[S]?|INSTANT|RAPID|AGUA|FORTE|GRANULADO|CACAO|POMADA|JARABE|LABIAL|ANTIALERGICO|ANESTESICO|DOBLE|SEMANAL|INICIO|ACTIVADO|VEGETAL|MED|SAN PELLEGRINO|KERN|CONGESTION|MUCOSIDAD|GEN|VITAMINADO|CHOQUE|PREDENTAL|INHALACION|CLINICS|ADSORBENTE|SOLUBLE|EXPECTORANTE|OFTALMIC|UNGUENTO|PRECARGADA|ULTRA |NEO|RECTANGULAR|MEDICAMENTOSO|GASTRORRESISTENTES|COMPLEX|TRIMESTRAL|PHARMA|PHARM|FARMA|CINFA|NORMO|TEVA|QUALIGEN|RATIO|MONODOSIS|EFERVESCENTE|RETARD|OTICO|SERRA|DERMATOLOGICA|GROUP|NASAL|MENSUAL|MONODOSIS|PEREZGIMENEZ|PENSAVITAL|FLAS|SODIC|CICATRIZANTE|PROLONG|TECNIGEN|O|\\+|PENSA|NEUTRO|A|ALTER|OVULOS|TOPICA|ARRIÑONADA|S|POTASIO|MONO|MAX|BISACODILO|POS|IFC|WASH|TUSS|EMULGEL)\\b"
+  if(grepl(patron,prescripcion$des_nomco[i])) {
+    prescripcion$des_nomco[i] = gsub(patron,"",prescripcion$des_nomco[i])
+  }
+  # cat("Medicamento ",i, " de ", nrow(prescripcion), " analizado\n")
+}
+
+# PASO 11: Quitamos -
+for (i in 1:nrow(prescripcion)) {
+  patron = "-"
+  if(grepl(patron,prescripcion$des_nomco[i])) {
+    prescripcion$des_nomco[i] = gsub(patron,"",prescripcion$des_nomco[i])
+  }
+  # cat("Medicamento ",i, " de ", nrow(prescripcion), " analizado\n")
+}
+
+prescripcion$des_nomco = quitar_espacios_extra(prescripcion$des_nomco)
+
+# PASO 12: Creamos el diccionario, seleccionando la variable limpia del nombre del 
+# medicamento y creando una variable que sea si ese medicamente es estupefaciente o psicotropo
+diccionario_med = prescripcion %>% 
+  distinct(des_nomco, lista_estupefaciente, lista_psicotropo) %>% 
+  mutate("estup_psicot" = !is.na(lista_estupefaciente) | !is.na(lista_psicotropo))
+
+
+diccionario_med = diccionario_med %>% 
+  select(des_nomco, estup_psicot)
+
+names(diccionario_med) = c("med", "estup_psicot")
+
+################################################################################
+# DICCIONARIO LABORATORIOS DE OTROS PRODUCTOS
+laboratories <- dbGetQuery(con_nomenclator, "
+  select *
+  from catalog.laboratories
+")
+laboratories$id = as.numeric(laboratories$id)
+laboratories$code = as.numeric(laboratories$code)
+laboratories$license = as.logical(laboratories$license)
+
+
+# PASO 2: Pasamos los caracteres a mayúsculas
+laboratories$name = toupper(laboratories$name)
+
+# PASO 3: Quitamos las tildes
+quitar_tildes <- function(texto) {
+  texto_sin_tildes <- chartr("ÁÉÍÓÚÀÈÌÒÙÖÜ", "AEIOUAEIOUOU", texto)
+  return(texto_sin_tildes)
+}
+laboratories$name = quitar_tildes(laboratories$name)
+
+# PASO 4: Creamos una función que quite algunos símbolos, términos referentes a las empresas
+# y a los laboratorios
+limpiar_lab = function(texto) {
+  texto_limpio = gsub(",", " ", texto)
+  texto_limpio = gsub("[&]", " ", texto_limpio)
+  texto_limpio = gsub("-|ª", " ", texto_limpio)
+  texto_limpio = gsub("(S[.][^ ].*|\\bSA\\b.*|\\bSL\\b.*|\\bSAL\\b.*|\\bSLU\\b.*|\\bS\\b.*|\\bSLL\\b.*|\\bLLC\\b|\\bSRL\\b|\\bCIA\\b|\\bY\\b|\\bDE\\b|\\bBY\\b|\\bAND\\b)", "", texto_limpio)
+  texto_limpio = gsub("[.]", " ", texto_limpio)
+  texto_limpio = gsub("\\b(LAB|FARMA|PHARMA|LA|DEL|PRO|LABS)\\b", "", texto_limpio)
+  texto_limpio = gsub("[(].*[)]", "", texto_limpio)
+  texto_limpio = gsub("\\b\\S*LABORATO\\S*\\b", "", texto_limpio)
+}
+
+laboratories$name = limpiar_lab(laboratories$name)
+
+# Cambios los 4 siguientes a mano
+for (i in 1:nrow(laboratories)) {
+  if(laboratories$name[i] == "I M MANUFACTURAS") {
+    laboratories$name[i] = "IM MANUFACTURAS"
+  }
+  
+  if(laboratories$name[i] == "J B J  EXCLUSIVAS  ") {
+    laboratories$name[i] = "JBJ EXCLUSIVAS"
+  }
+  
+  if(laboratories$name[i] == "B G T  INTERNATIONAL  ") {
+    laboratories$name[i] = "BGT INTERNATIONAL"
+  }
+  
+  if(laboratories$name[i] == "A C P G ") {
+    laboratories$name[i] = "ACPG"
+  }
+}
+
+quitar_espacios_extra <- function(texto) {
+  texto_limpio <- gsub("\\s+", " ", texto)  # Reemplaza múltiples espacios con uno solo
+  return(trimws(texto_limpio))  # Elimina espacios al inicio y final
+}
+laboratories$name = quitar_espacios_extra(laboratories$name)
+
+# PASO 5: Eliminamos de los campos las letras que estén solas, excepto la L (por L'OREAL) 
+# y la Q (por Q PHARMA)
+quitar_letras = function(texto) {
+  patron = "\\b(A|B|C|D|E|F|G|H|I|J|K|M|N|Ñ|O|P|R|S|T|U|V|W|X|Y|Z)\\b"
+  texto_limpio = gsub(patron,"",texto)
+}
+
+laboratories$name = quitar_espacios_extra(quitar_letras(laboratories$name))
+
+# PASO 6: Tokenizamos para ver las palabras más repetidas y que serán eliminadas
+extraer_palabras <- function(frases) {
+  palabras <- unlist(strsplit(frases, "\\s+"))
+}
+
+df = as.data.frame(extraer_palabras(laboratories$name))
+names(df) = "pal"
+df = df %>% 
+  select(pal) %>% 
+  count(pal)
+
+quitar_palabras_repetidas = function(texto){
+  patron = "\\b(LIMITADA|GROUP|FARMACIA|FARM|ESP|INTERNACIONAL|SPAIN|ESPAÑA|IRELAND|LIMITED|PHARMACEUTICALS|IBERICA|EUR|FARMACEUTICA|DISTRIBUCION|ESPAÑOLA|INTERNATIONAL|HOSPITAL|PHARMACEUTICAL|LOGISTICA|ITALIA|IBERIA|HISPANIA|FARMACEUTICAS|GRUPO)\\b"
+  texto_limpio = gsub(patron,"",texto)
+}
+
+laboratories$name = quitar_espacios_extra(quitar_palabras_repetidas(laboratories$name))
+
+# PASO 7: Creamos el diccionario de laboratorios con el id y el nombre
+diccionario_lab = laboratories %>% 
+  select(id, name)
+
+################################################################################
+products <- dbGetQuery(con_nomenclator, "
+  select *
+  from catalog.products
+")
+
+products$id = as.numeric(products$id)
+
+
+laboratory_product <- dbGetQuery(con_nomenclator, "
+  select *
+  from catalog.laboratory_product
+")
+laboratory_product$product_id = as.numeric(laboratory_product$product_id)
+laboratory_product$laboratory_id = as.numeric(laboratory_product$laboratory_id)
+laboratory_product$type = as.character(laboratory_product$type)
+
+# PASO 2: Definimos las funciones que nos serán útiles en el desarrollo
+quitar_tildes <- function(texto) {
+  texto_sin_tildes <- chartr("ÁÉÍÓÚÀÈÌÒÙÜ", "AEIOUAEIOUU", texto)
+  return(texto_sin_tildes)
+}
+
+quitar_simbolos = function(texto) {
+  texto_limpio = gsub("[*]", "", texto)
+  texto_limpio = gsub("[(]", " ", texto_limpio) 
+  texto_limpio = gsub("[)]", " ", texto_limpio)
+  texto_limpio = gsub("®", "", texto_limpio)
+  texto_limpio = gsub("[/]", " ", texto_limpio)
+  texto_limpio = gsub("=", "", texto_limpio)
+  texto_limpio = gsub(":", "", texto_limpio)
+  texto_limpio = gsub("\\[", "", texto_limpio)
+  texto_limpio = gsub("\\]", "", texto_limpio)
+  texto_limpio = gsub("·","",texto_limpio)
+  texto_limpio = gsub("º","",texto_limpio)
+  texto_limpio = gsub("-"," ",texto_limpio)
+  texto_limpio = gsub("™","",texto_limpio)
+  texto_limpio = gsub("#","",texto_limpio)
+  texto_limpio = gsub("ª","",texto_limpio)
+  texto_limpio = gsub("\\^","",texto_limpio)
+  texto_limpio = gsub("[!]","",texto_limpio)
+  
+  texto_limpio = gsub("^_", "", texto_limpio)
+  texto_limpio = gsub("^[+]", "", texto_limpio)
+  
+  texto_limpio = gsub("--", "", texto_limpio)
+  texto_limpio = gsub("---", "", texto_limpio)
+  texto_limpio = gsub(" - | – ", " ", texto_limpio)
+  
+  texto_limpio = gsub("(\\d)[,|'](\\d)", "\\1\\.\\2", texto_limpio)
+  texto_limpio = gsub("’","\\.",texto_limpio)
+  
+  texto_limpio = gsub("[.]$", "", texto_limpio)
+  texto_limpio = gsub(",", "", texto_limpio)
+  texto_limpio = gsub(";", "", texto_limpio)
+  texto_limpio = gsub("1 000", "1000", texto_limpio)
+  texto_limpio = gsub("([^0-9])[.]([^0-9])", "\\1\\2", texto_limpio)
+  texto_limpio = gsub("([^0-9])[.]([0-9])", "\\1 \\2", texto_limpio)
+  texto_limpio = gsub("([0-9])[.]([^0-9])", "\\1 \\2", texto_limpio)
+  texto_limpio = gsub("(?<!\\d)\\.(?!\\d)", "", texto_limpio, perl = TRUE)
+  texto_limpio = gsub("[.] ", " ", texto_limpio)
+  
+  
+  
+  return(texto_limpio)  
+}
+
+quitar_espacios_extra <- function(texto) {
+  texto_limpio <- gsub("\\s+", " ", texto)  # Reemplaza múltiples espacios con uno solo
+  return(trimws(texto_limpio))  # Elimina espacios al inicio y final
+}
+
+# PASO 3: Creamos la tabla de productos, haciendo joins entre products, laboratories y laboratory_product
+productos = laboratory_product  %>%
+  filter(type == "COMERCIALIZER") %>%
+  left_join(laboratories, by = c("laboratory_id" = "id")) %>%
+  left_join(products, by = c("product_id" = "id")) %>%
+  select(product_id, laboratory_id, "laboratory_name" = name, nationalCode, denomination,presentation)
+
+# PASO 4: Convertimos a mayúsculas el campo de presentation, quitamos tildes, símbolos y espacios innecesarios
+productos$presentation = toupper(productos$presentation)
+productos$presentation = quitar_tildes(productos$presentation)
+productos$presentation = quitar_simbolos(productos$presentation)
+productos$presentation = quitar_espacios_extra(productos$presentation)
+productos$presentation = gsub("ROCHEPOSAY","ROCHE POSAY",productos$presentation)
+
+# PASO 5: Crear un corpus y eliminar las stopwords en español
+corpus <- Corpus(VectorSource(productos$presentation))
+corpus <- tm_map(corpus, removeWords, quitar_tildes(toupper(stopwords("spanish"))))
+# Convertir el resultado a texto limpio
+productos$presentation <- sapply(corpus, as.character)
+
+# PASO 6: Realizamos un proceso de homogeneización a la limpieza que hemos realizado
+# en las prescripciones para facilitar la clasificación de estas en productos del catálogo
+productos$presentation = quitar_espacios_extra(productos$presentation)
+productos$presentation = gsub("([^A-Z])CAP[S]?(\\b)","\\1 CAPSULAS\\2", productos$presentation)
+productos$presentation = gsub("CAPSUL(\\b)","CAPSULAS\\1", productos$presentation)
+productos$presentation = gsub("COMP[R]?(\\b)","COMPRIMIDOS\\1", productos$presentation)
+productos$presentation = gsub("(\\b)U(\\b)","\\1UNIDADES\\2", productos$presentation)
+productos$presentation = gsub("(\\b)UD[S]?(\\b)","\\1UNIDADES\\2", productos$presentation)
+productos$presentation = gsub("(\\b)UNID[S]?(\\b)","\\1UNIDADES\\2", productos$presentation)
+productos$presentation = gsub("EFERV(\\b)","EFERVESCENTES\\1", productos$presentation)
+productos$presentation = gsub("MG ML","MGML", productos$presentation)
+productos$presentation = gsub("MILIGRAMO[S]?(\\b)","\\1MG\\2", productos$presentation)
+productos$presentation = gsub("GRAMO[S]?(\\b)","\\1G\\2", productos$presentation)
+productos$presentation = gsub("GR[S]?(\\b)","\\1G\\2", productos$presentation)
+productos$presentation = gsub("MILIMETRO[S]?(\\b)","\\1MM\\2", productos$presentation)
+productos$presentation= gsub("METRO[S]?(\\b)","\\1M\\2", productos$presentation)
+productos$presentation = gsub("CENTIMETRO[S]?(\\b)","\\1CM\\2", productos$presentation)
+productos$presentation = gsub("MILILITRO[S]?(\\b)","\\1ML\\2", productos$presentation)
+productos$presentation = gsub("LITRO[S]?(\\b)","\\1L\\2", productos$presentation)
+productos$presentation = gsub("MGR[S]?(\\b)","\\1MG\\2", productos$presentation)
+productos$presentation = gsub("MILIMETRO[S]?(\\b)","\\1MM\\2", productos$presentation )
+productos$presentation = gsub("MG[S]?(\\b)","\\1MG\\2", productos$presentation )
+productos$presentation = gsub("MLG[S]?(\\b)","\\1MG\\2", productos$presentation )
+productos$presentation = gsub("MICROGRAMO[S]?(\\b)","\\1MCG\\2",productos$presentation )
+productos$presentation  = gsub("(\\b)MILILITRO[S]?(\\b)","\\1ML\\2", productos$presentation )
+productos$presentation  = gsub("(\\b)LITRO[S]?(\\b)","\\1L\\2",productos$presentation )
+productos$presentation  = gsub("(\\b)TAB[S]?(\\b)","\\1TABLETAS\\2",productos$presentation )
+productos$presentation = gsub("(\\d+)([A-ZΜ%])","\\1 \\2", productos$presentation)
+productos$presentation  = gsub("(\\d*[.]?\\d+)[ ]?(ML|L|MM||CM|M)?[ ]?X[ ]?(\\d*[.]?\\d+)([A-Z]+)?", "\\1 \\2 X \\3 \\4", productos$presentation )
+productos$presentation = gsub("([^0-9]5) ([A])","\\1\\2", productos$presentation)
+productos$presentation = gsub("(SPF) (\\d+)","\\1\\2", productos$presentation)
+productos$presentation = gsub("([A-Z]&[^G]) (4[^0-9])","\\1\\2", productos$presentation)
+productos$presentation = gsub("(\\d+)[ ]?P(\\b)","\\1 PIEZAS\\2", productos$presentation)
+productos$presentation = gsub("JBE(\\b)"," JARABE\\1", productos$presentation)
+productos$presentation = gsub("JB(\\b)"," JARABE\\1", productos$presentation)
+productos$presentation = quitar_espacios_extra(productos$presentation)
+
+# PASO 7: Copiamos el campo de presentation para eliminar de este posibles contenidos, volúmenes,...
+productos$presentation2 = productos$presentation
+
+# PASO 8: Creamos los campos auxiliares similares a los creados en la limpieza de prescripciones
+productos$contenido = rep(NA, nrow(productos))
+for (i in 1:nrow(productos)) {
+  patron = "((\\d*)(\\.\\d*)?([^A-Z][ ]?X[ ]?\\d*)?(?:CAJA|PACK|BOTE|BOTE NEUTRO|TUBO|PERLA[S]?|FRASCO[S]?|TABLET[A]?[S]?)?(?: CON| DE)?\\s?\\d+\\s?(CANULAS VAGINALES|APLICADORES VAGINALES|APLICADOR VAGINAL|CANULA VAGINAL|PIEZA[S]?|PERLA[S]?|CARTUCHOS INYECTABLES|CARTUCHOS|OVULOS|PLUMA[S] PRECARGADA[S]|PLUMA[S]|SOLUCION ORAL|SOLUCION.*INYECTABLE|SOLUCION|JERINGA[S]?|CAPSULAS GELATINA BLANDA|CAPSULAS VEGETALES|CAPSULAS ORALES|MINISOBRES|VEGCAPS|AMPOLLA[S]?|SPRAY.*NASAL|SPRAY[S]?|APOSITO[S]?|BRICK[S]?|UNIDADES|FRASCO[S]?|BOTELLA[S]?|CAJA[S]?|ENVASE[S]?|COMPRIMIDO[S]? EFERVESCENTE[S]?|COMPRIMIDO[S]? .* MASTICABLE[S]?|COMPRIMIDOS MAST\\w*\\b|COMPRIMIDO[S]?|COMPR RECUBIERTOS|COMP|SOBRE[S]?|DOSI[S]?|CAPSULA[S]?|CAPSULE[S]?|CAP[S]?|VIALES BEBIBLES|VIALES|UNIDADES|BOTE[S]?|\\d{1,2}[ ]?STICK[S]?|MONODOSIS|UNIDOSIS|CAPULAS|CASPULAS|X\\s*\\d+ [^CM])\\b)|\\d*[ ]?(TUBO|TABLET[A]?S|SOLUCION.*INTECTABLE|SOLUCION CUTANEA)"
+  if(grepl(patron,productos$presentation2[i])) {
+    productos$contenido[i] = str_extract(productos$presentation2[i],patron)
+    productos$presentation2[i] = str_remove_all(productos$presentation2[i],patron)
+  }
+  # cat("Producto ",i, " de ", nrow(productos), " analizado\n")
+}
+
+
+productos$forma = rep(NA, nrow(productos))
+productos$forma2 = rep(NA, nrow(productos))
+
+for (i in 1:nrow(productos)) {
+  patron = "\\b(TUBO GEL|GEL|GEL VAGINAL|APOSITO[S]?|OVULO[S]|PLUMA[S]? PRECARGADA[S]|ENVASE[S]?|COMPRIMIT[S]?|CANULAS VAGINALES|APLICADORES VAGINALES|APLICADOR VAGINAL|CANULA VAGINAL|COMPRIMIDOS RECUBIERTOS CON PELICULA EFG|COMPRIMIDOS RECUBIERTOS CON PELICULA|CAPSULAS ORALES|CON PELICULA|COMPR|CON PELICULA EFG|EFG|COMPRIM[M]?IDO[S]?|COMPRIMIDOS EFERVESCENTES|COMPRIMIDOS MAST\\w*|COMPRIMIDOS DISPERSABLES|COMPRIMIDOS DE LIBERACION PROLONGADA EFG|COMP .*|COMP|SOBRES DE GRANULADO|SOBRES|CAPSULAS GELATINA BLANDA|CAPSULAS ORALES|CAPSULAS BLANDAS|CAPSULA[S]? DURA[S]?|CAPSUL[A]?[E]?[S]?|CAPS|PLUMA[S]?|VIALES BEBIBLES|VIALES|MONODOSIS|SPRAY|SUSPENSION INYECTABLE|SUSPENSION ORAL|SUSPENSION|CREMA|GREMA|POMADA|GOTAS ORALES|GOTAS|GOTA|CHAMPU[N]?|SHAMPOO|AGUJA|AGUJAS|SOLUCION ORAL|SOLUCION INYECTABLE|SOLUCION|SOLUCAO ORAL|PREPROBIOTICO CON ENZIMAS DIGESTIVAS|COLUTORIO|ESPUMA|JARABE|EMULSION INYECTABLE|EMULSION|TOALLITAS|ORAL)\\b"
+  if(grepl(patron,productos$presentation2[i])) {
+    productos$forma[i] = str_extract(productos$presentation2[i],patron)
+    productos$presentation2[i] = str_remove_all(productos$presentation2[i],productos$forma[i])
+  }
+  if(grepl(patron,productos$presentation2[i])) {
+    productos$forma2[i] = str_extract(productos$presentation2[i],patron)
+    productos$presentation2[i] = str_remove_all(productos$presentation2[i],productos$forma2[i])
+  }
+  # cat("Producto ",i, " de ", nrow(productos), " analizado\n")
+}
+
+
+productos$concentracion = rep(NA, nrow(productos))
+for (i in 1:nrow(productos)) {
+  patron = "(\\d+\\.?\\d*\\s?%)|(\\d+\\.?\\d*\\s?(MU|MG|MILIGRAMOS|MLG|M|UI|UNIDADES))\\s+(\\d*\\.?\\d*\\s?(ML|L|MILILITROS|LITROS)\\b)"
+  if(grepl(patron,productos$presentation2[i])) {
+    productos$concentracion[i] = str_extract(productos$presentation2[i],patron)
+    productos$presentation2[i] = str_remove_all(productos$presentation2[i],patron)
+  }
+  # cat("Producto ",i, " de ", nrow(productos), " analizado\n")
+}
+
+productos$masa_dimension = rep(NA, nrow(productos))
+for (i in 1:nrow(productos)) {
+  patron = "((\\d+[.]?\\d*[ ]?(((CM|MM|M)[ ]?X[ ]?\\d+[.]?\\d*[ ]?(CM|MM|M)\\b)|UFC|MG|MGRS|MGS|G|MICROGRAMOS|MILIGRAMO[S]?|GRAMO[S]?|GR|MCG|MLG|ΜG|M|MM|MGR|MILIGRAMS|MR)\\b)|([C]?[M]?M[ ]?\\d+[.]?\\d*[ ]?X[ ]?\\d+[.]?\\d*\\b))|(\\d+[ ]?X[ ]?\\d+[ ]?(CM|M))"
+  if(grepl(patron,productos$presentation2[i])) {
+    productos$masa_dimension[i] = str_extract(productos$presentation2[i],patron)
+    productos$presentation2[i] = str_remove_all(productos$presentation2[i],patron)
+  }
+  # cat("Producto ",i, " de ", nrow(productos), " analizado\n")
+}
+
+
+productos$volumen = rep(NA, nrow(productos))
+for (i in 1:nrow(productos)) {
+  patron = "(\\d* )?(PLUMA[S]? PRECARGADA[S] DE |JERINGA[S] PRECARGADA[S]?)?(\\d{1,}[.]?\\d*[ ]?|\\d+[.]?\\d*[ ]?X[ ]?\\d+[.]?\\d*)(L|ML|LITROS|MILILITROS|UI)\\b"
+  if(grepl(patron,productos$presentation2[i])) {
+    productos$volumen[i] = str_extract(productos$presentation2[i],patron)
+    productos$presentation2[i] = str_remove_all(productos$presentation2[i],patron)
+  }
+  # cat("Producto ",i, " de ", nrow(productos), " analizado\n")
+}
+
+# PASO 9: Haciendo uso del diccionario de laboratorios, vamos a tomar el id de los laboratorios que su nombre 
+# aparece incrustado en alguna palabra de sus productos
+productos$presentation2 = quitar_espacios_extra(productos$presentation2)
+productos = productos %>% left_join(diccionario_lab, by=c("laboratory_id" = "id"))
+
+id_lab = c()
+for (i in 1:nrow(productos)) {
+  if(grepl(paste0(productos$name[i],"[A-Z]"), productos$presentation[i]) | grepl(paste0("[A-Z]",productos$name[i]), productos$presentation[i])) {
+    id_lab = c(id_lab, productos$laboratory_id[i])
+  }
+  # cat("Producto ",i, " de ", nrow(productos), " analizado\n")
+}
+
+id_lab = c(id_lab, 2000274)
+id_lab = unique(id_lab)
+
+
+palabras <- unique(unlist(strsplit(diccionario_lab$name, " ")))
+palabras = setdiff(palabras,c("SALUD","AGUA","Q","BIO","NUTRICION","NATURAL","MAX","THE","REGULADORA","BEBE","MAR","CIRUGIA","NATUR","ENERGY", "HEALTH", "FLORADIX","CASEN","APOSITOS", "CARE"))
+lab_no_eliminar = c("NORD","KERN","BAC","BARD","MABO",
+                    "FAES"   , "LANIER"  ,"ARISTO",  "OIKO"  ,  "FARDI" ,  "IDEO",    
+                    "SEID" ,   "ISDIN",   "NARVAL",  "CORYSAN" ,"INDAS" ,  "URGO"  , 
+                    "VERKOS",  "ALTER", "VICHY", "SKINCEUTICALS", "ROCHE","POSAY","CERAVE")
+patron = paste(setdiff(palabras, lab_no_eliminar), collapse = "|")
+patron = paste0("(\\b(",patron,")\\b)|")
+
+for (i in 1:nrow(productos)) {
+  if(grepl(patron, productos$presentation2[i])) {
+    productos$presentation2[i] = str_remove_all(productos$presentation2[i], patron)
+  }
+  # cat("Producto ",i, " de ", nrow(productos), " analizado\n")
+}
+
+productos$presentation2 = quitar_espacios_extra(productos$presentation2)
+
+# PASO 10: Vamos a eliminar los nombres de laboratorio que aparezcan sueltos en los productos
+productos$presentation3 =  productos$presentation2
+
+palabras <- unique(unlist(strsplit(diccionario_lab$name, " ")))
+palabras = setdiff(palabras,c("SALUD","AGUA","Q","BIO","NUTRICION","NATURAL","MAX","THE","REGULADORA","BEBE","MAR","CIRUGIA","NATUR","ENERGY", "HEALTH", "FLORADIX","CASEN","APOSITOS", "CARE"))
+patron = paste(palabras,collapse = "|")
+patron = paste0("(\\b(",patron,")\\b)|")
+
+for (i in 1:nrow(productos)) {
+  if(grepl(patron, productos$presentation3[i])) {
+    productos$presentation3[i] = str_remove_all(productos$presentation3[i], patron)
+  }
+  cat("Producto ",i, " de ", nrow(productos), " analizado\n")
+}
+
+productos$presentation3 = quitar_espacios_extra(productos$presentation3)
+
 ################################################################################
 # FUNCIÓN CLASIFICA
-
 clasifica = function(prescription) {
   # PASO 1: Tomamos la hora y fecha actual del sistema para evaluar el tiempo de 
   # ejecución. Además, pedimos al programa que no muestre 
@@ -31,13 +689,13 @@ clasifica = function(prescription) {
   library(stringdist)
   
   # PASO 2: Cargamos los datos necesarios para el desarrollo
-  products = read.csv("data/products.csv")
-  laboratories = read.csv("data/laboratories.csv")
-  laboratory_product = read.csv("data/laboratory_product.csv")
-  prescripcionmed = read.csv("data/prescripcionmed.csv")
-  diccionario_med = read.table("data/diccionario_med.txt", header = T)
-  diccionario_lab = read.table("data/diccionario_lab.txt", header = T)
-  productos = read.table("data/productos.txt", header = T)
+  # products = read.csv("data/products.csv")
+  # laboratories = read.csv("data/laboratories.csv")
+  # laboratory_product = read.csv("data/laboratory_product.csv")
+  # prescripcionmed = read.csv("data/prescripcionmed.csv")
+  # diccionario_med = read.table("data/diccionario_med.txt", header = T)
+  # diccionario_lab = read.table("data/diccionario_lab.txt", header = T)
+  # productos = read.table("data/productos.txt", header = T)
   
   # PASO 3: Tomamos ahora la fecha del sistema pero en otro formato apto para 
   # añadirlo a la salida. Creamos una carpeta para almacenar los archivos de la salida
@@ -1835,21 +2493,24 @@ clasifica = function(prescription) {
 }
 
 # Leer tabla
-df_prescription <- dbGetQuery(con, "
+df_prescription <- dbGetQuery(con_rempe, "
   SELECT *
   FROM rempe.prescription
   WHERE created_date >= '2025-04-11'
 ")
 
+
 # Ejecutar clasificación
 resultado <- clasifica(df_prescription)
 
-# Guardar en nueva tabla (puedes ajustar según tu lógica)
+# Guardar en nueva tabla
 # dbWriteTable(
-#   con,
+#   con_rempe,
 #   name = Id(schema = "rempe", table = "prescription_aux"),
 #   value = resultado,
 #   append = TRUE
 # )
 
-dbDisconnect(con)
+dbDisconnect(con_rempe)
+dbDisconnect(con_nomenclator)
+
