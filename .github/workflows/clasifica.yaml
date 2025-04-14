@@ -25,7 +25,8 @@ jobs:
            echo "PGPASSWORD=${{ secrets.PGPASSWORD }}" >> .Renviron
            echo "PGUSER=${{ secrets.PGUSER }}" >> .Renviron
            echo "PGHOST=${{ secrets.PGHOST }}" >> .Renviron
-           echo "PGDBNAME=${{ secrets.PGDBNAME }}" >> .Renviron
+           echo "PGDBNAME1=${{ secrets.PGDBNAME1 }}" >> .Renviron
+           echo "PGDBNAME2=${{ secrets.PGDBNAME2 }}" >> .Renviron
            echo "PGPORT=5432" >> .Renviron
 
       - name: Ejecutar script de clasificación
